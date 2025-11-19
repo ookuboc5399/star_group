@@ -1,16 +1,20 @@
 import { NextResponse } from 'next/server';
 import { google } from 'googleapis';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
 // 予約状況スプレッドシートID（予約状況表示用）
 const RESERVATION_SPREADSHEET_ID = '1h6n771nzwqNxFp3O2L5yCROA5g36o0s3r7PMADyowLA';
 const RESERVATION_SHEET_GID = '131484979';
 
 // サービスアカウント認証情報の読み込み
 function getAuth() {
-  const credentialsPath = join(process.cwd(), 'roadtoentrepreneur-045990358137.json');
-  const credentials = JSON.parse(readFileSync(credentialsPath, 'utf8'));
+  let credentials;
+  if (process.env.GOOGLE_CREDENTIALS) {
+    credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+  } else {
+    const { readFileSync } = require('fs');
+    const { join } = require('path');
+    const credentialsPath = join(process.cwd(), 'roadtoentrepreneur-045990358137.json');
+    credentials = JSON.parse(readFileSync(credentialsPath, 'utf8'));
+  }
 
   return new google.auth.JWT({
     email: credentials.client_email,
