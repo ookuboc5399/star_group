@@ -28,6 +28,7 @@ export interface Reception {
   note: string;
   startMinutes: number | null;
   endMinutes: number | null;
+  rowIndex?: number;
 }
 
 export interface ReceptionData {
