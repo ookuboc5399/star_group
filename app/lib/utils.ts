@@ -82,3 +82,18 @@ export function getCurrentTimeMinutes(): number {
   return timeToMinutes(hour, minute);
 }
 
+// 名前を正規化（プレフィックスや空白を除去）
+export function normalizeName(name: string): string {
+  if (!name) return '';
+  let normalized = String(name).trim();
+  // 先頭のブランド接頭辞（「ご」「ぐ」など）と全角・半角スペースを除外
+  normalized = normalized.replace(/^[ごぐ]\s*/i, '');
+  // スラッシュ区切りの先頭を優先
+  if (normalized.includes('/')) {
+    normalized = normalized.split('/')[0].trim();
+  }
+  // 全角スペースや半角スペースを取り除く
+  normalized = normalized.replace(/\s+/g, '');
+  return normalized;
+}
+

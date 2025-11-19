@@ -34,6 +34,18 @@ export interface ReceptionData {
   success: boolean;
   receptions?: Reception[];
   error?: string;
+  debug?: {
+    totalRows: number;
+    validReceptions: number;
+    skipped: number;
+    skippedReasons: {
+      noCastName: number;
+      noStartTime: number;
+      noCourseTime: number;
+      multiple: number;
+    };
+    parseErrors: number;
+  };
 }
 
 export interface Girl {

@@ -19,7 +19,21 @@ import {
   getBusinessDate,
   getDateOptions,
   getCurrentTimeMinutes,
+  normalizeName,
 } from '@/app/lib/utils';
+
+const GOHOBI_ROOKIES = new Set([
+  'もか',
+  'えな',
+  'みく',
+  'なつき',
+  'ゆな',
+  'ゆず',
+  'そあ',
+  'れもん',
+  'きほ',
+  'のあ',
+]);
 
 export default function ReservationsPage() {
   // 予約状況用の状態（営業時間を考慮した日付を初期値とする）
@@ -48,6 +62,13 @@ export default function ReservationsPage() {
     x: number;
     y: number;
   } | null>(null);
+  const [nameFilter, setNameFilter] = useState('');
+  const normalizedNameFilters = useMemo(() => {
+    return nameFilter
+      .split(/[\s,、]+/)
+      .map((name) => normalizeName(name).replace(/\s+/g, ''))
+      .filter(Boolean);
+  }, [nameFilter]);
   
   // hoveredSlotの状態変化をログに出力（デバッグ用）
   useEffect(() => {
@@ -1479,12 +1500,18 @@ export default function ReservationsPage() {
               >
                 チャットメッセージ生成
               </Link>
+              <Link
+                href="/knowledge"
+                className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors text-sm"
+              >
+                ナレッジ
+              </Link>
             </nav>
           </div>
         </header>
 
-        <div className="mb-4 flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
-            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+        <div className="mb-4 flex flex-col gap-4 justify-between items-start sm:items-center">
+            <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center w-full">
               <div className="flex items-center gap-2">
                 <label htmlFor="date-select" className="text-sm font-medium text-gray-700">
                   日付選択:
@@ -1501,6 +1528,19 @@ export default function ReservationsPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="flex items-center gap-2 w-full lg:w-auto">
+                <label htmlFor="name-filter" className="text-sm font-medium text-gray-700 whitespace-nowrap">
+                  女性名検索:
+                </label>
+                <input
+                  id="name-filter"
+                  type="text"
+                  value={nameFilter}
+                  onChange={(e) => setNameFilter(e.target.value)}
+                  placeholder="例: もか えな / もか,えな"
+                  className="flex-1 lg:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                />
               </div>
               <button
                 onClick={() => fetchReservations()}
@@ -1614,7 +1654,7 @@ export default function ReservationsPage() {
                       
                       // 受付データをチェック（キャスト名が完全一致する受付があるか）
                       // 正規化関数を使用（getReservedSlotsと同じロジック）
-                      const normalizeName = (name: string): string => {
+                      const normalizeForMatching = (name: string): string => {
                         if (!name) return '';
                         let normalized = String(name).trim();
                         // 「ご　」「ぐ　」「ご 」「ぐ 」「ご」「ぐ」などのプレフィックスを除去
@@ -1629,10 +1669,10 @@ export default function ReservationsPage() {
                       let hasReception = false;
                       if (receptionData?.receptions) {
                         hasReception = receptionData.receptions.some(reception => {
-                          const normalizedReceptionCastName = normalizeName(reception.castName || '');
-                          const normalizedNameGohobi = normalizeName(girl.nameGohobi || '');
-                          const normalizedNameGussuri = normalizeName(girl.nameGussuri || '');
-                          const normalizedName = normalizeName(girl.name || '');
+                          const normalizedReceptionCastName = normalizeForMatching(reception.castName || '');
+                          const normalizedNameGohobi = normalizeForMatching(girl.nameGohobi || '');
+                          const normalizedNameGussuri = normalizeForMatching(girl.nameGussuri || '');
+                          const normalizedName = normalizeForMatching(girl.name || '');
                           
                           const castNameMatch = 
                             (normalizedNameGohobi && normalizedReceptionCastName === normalizedNameGohobi) ||
@@ -1644,6 +1684,30 @@ export default function ReservationsPage() {
                           
                           return castNameMatch;
                         });
+                      }
+                      
+                      // 名前フィルターの判定
+                      if (normalizedNameFilters.length > 0) {
+                        const candidateNames: string[] = [];
+                        const collectNames = (value?: string) => {
+                          if (!value) return;
+                          candidateNames.push(value);
+                          if (value.includes('/')) {
+                            value.split('/').forEach(part => candidateNames.push(part));
+                          }
+                        };
+                        collectNames(girl.name);
+                        collectNames(girl.nameGohobi);
+                        collectNames(girl.nameGussuri);
+                        const normalizedCandidates = candidateNames
+                          .map(name => normalizeForMatching(name).replace(/\s+/g, ''))
+                          .filter(Boolean);
+                        const matchesFilter = normalizedNameFilters.some(filterName =>
+                          normalizedCandidates.some(candidate => candidate === filterName)
+                        );
+                        if (!matchesFilter) {
+                          return false;
+                        }
                       }
                       
                       // いずれかがあれば表示
@@ -1742,6 +1806,23 @@ export default function ReservationsPage() {
                       const selectedDateObj = new Date(now.getFullYear(), paramMonth - 1, paramDay, 0, 0, 0);
                       const isFutureDate = selectedDateObj > businessToday;
                       
+                      const isGohobiRookie = (() => {
+                        const names: string[] = [];
+                        const collectNames = (value?: string) => {
+                          if (!value) return;
+                          names.push(value);
+                          if (value.includes('/')) {
+                            value.split('/').forEach(part => names.push(part));
+                          }
+                        };
+                        collectNames(girl.nameGohobi);
+                        collectNames(girl.name);
+                        return names.some(name => {
+                          const normalized = normalizeName(name).replace(/\s+/g, '');
+                          return normalized ? GOHOBI_ROOKIES.has(normalized) : false;
+                        });
+                      })();
+
                       // ブランドを判定（予約データから）
                       let detectedBrand: 'gohobi' | 'gussuri' | 'chijo' | null = null;
                       if (girl.reservations && girl.reservations.length > 0) {
@@ -1899,6 +1980,11 @@ export default function ReservationsPage() {
                                   <div className="flex items-center gap-1">
                                     <span className="text-[10px] text-yellow-600 font-bold bg-yellow-50 px-1 rounded">ご</span>
                                     <span className="text-xs text-yellow-700 font-semibold">{girl.nameGohobi}</span>
+                                    {isGohobiRookie && (
+                                      <span className="text-[10px] text-green-700 bg-green-100 font-semibold px-1.5 py-0.5 rounded-full">
+                                        新人
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-1">
                                     <span className="text-[10px] text-blue-600 font-bold bg-blue-50 px-1 rounded">ぐ</span>
@@ -1925,6 +2011,11 @@ export default function ReservationsPage() {
                                                     'text-xs text-gray-700 font-semibold'}>
                                     {girl.name}
                                   </span>
+                                  {isGohobiRookie && (
+                                    <span className="text-[10px] text-green-700 bg-green-100 font-semibold px-1.5 py-0.5 rounded-full">
+                                      新人
+                                    </span>
+                                  )}
                                   {isClosed && (
                                     <span className="text-xs text-red-600 font-semibold">(受付終了)</span>
                                   )}
@@ -1959,6 +2050,7 @@ export default function ReservationsPage() {
                                   transportationFee: '',
                                   discountName: '',
                                   note: '',
+                                  staff: '',
                                 });
                                 setShowAddReservationModal(true);
                               }

@@ -152,6 +152,7 @@ export async function GET(request: Request) {
       note: string; // AE列
       startMinutes: number | null; // 開始時間を分に変換
       endMinutes: number | null; // 終了時間を分に変換
+      rowIndex: number; // 行番号（0始まり、13行目が元データの開始）
     }> = [];
     
     let skippedCount = 0;

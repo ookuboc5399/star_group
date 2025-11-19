@@ -18,7 +18,7 @@ interface WebReservation {
 export default function ChatMessagesPage() {
   const [webReservations, setWebReservations] = useState<WebReservation[]>([]);
   const [selectedWebReservation, setSelectedWebReservation] = useState<number | null>(null);
-  const [messageType, setMessageType] = useState<'advance' | 'gohobi-new' | 'gohobi-new-2' | 'chijo-new' | 'gussuri-new' | 'confirm' | 'confirm-hotel' | 'price-change' | 'cast-absence' | 'time-change-request'>('advance');
+  const [messageType, setMessageType] = useState<'advance' | 'gohobi-new' | 'gohobi-new-2' | 'chijo-new' | 'gussuri-new' | 'confirm' | 'confirm-hotel' | 'price-change' | 'cast-absence' | 'time-change-request' | 'sold-out'>('advance');
   const [generatedMessage, setGeneratedMessage] = useState('');
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const now = new Date();
@@ -28,7 +28,7 @@ export default function ChatMessagesPage() {
 
   const generateChatMessage = useCallback((
     reservation: WebReservation,
-    type: 'advance' | 'gohobi-new' | 'gohobi-new-2' | 'chijo-new' | 'gussuri-new' | 'confirm' | 'confirm-hotel' | 'price-change' | 'cast-absence' | 'time-change-request'
+    type: 'advance' | 'gohobi-new' | 'gohobi-new-2' | 'chijo-new' | 'gussuri-new' | 'confirm' | 'confirm-hotel' | 'price-change' | 'cast-absence' | 'time-change-request' | 'sold-out'
   ): string => {
     // 開始時間をパース（例: "15:00" または "15.5"）
     let startHour = 0;
@@ -318,6 +318,19 @@ ${reservation.castName}さんのご予約、誠にありがとうございます
 
 ${shopName} ${staffName}`;
         break;
+
+      case 'sold-out':
+        message = `${reservation.customerName}様
+
+申し訳ございません。
+
+本日の${reservation.castName}さんですが先にお電話でご予約完売となってしまいました。
+こちらのご予約はキャンセル扱いとさせていただきます。
+
+他に気になる女性がいらっしゃいましたら、チャットまたは再度ネット予約をご利用いただけますと幸いです。
+
+${shopName} ${staffName}`;
+        break;
     }
 
     return message;
@@ -339,6 +352,7 @@ ${shopName} ${staffName}`;
         'price-change',
         'cast-absence',
         'time-change-request',
+        'sold-out',
       ];
       
       // ぐっすりのメッセージタイプ
@@ -349,6 +363,7 @@ ${shopName} ${staffName}`;
         'price-change',
         'cast-absence',
         'time-change-request',
+        'sold-out',
       ];
       
       // ブランドに応じてメッセージタイプを判定
@@ -517,6 +532,7 @@ ${shopName} ${staffName}`;
               { value: 'price-change', label: '料金の変更がある場合' },
               { value: 'cast-absence', label: '女性が休みの場合' },
               { value: 'time-change-request', label: '時間変更をお願いする場合' },
+              { value: 'sold-out', label: 'ご予約完売（キャンセル）' },
             ];
             
             // ぐっすりのメッセージタイプ
@@ -527,6 +543,7 @@ ${shopName} ${staffName}`;
               { value: 'price-change', label: '料金の変更がある場合' },
               { value: 'cast-absence', label: '女性が休みの場合' },
               { value: 'time-change-request', label: '時間変更をお願いする場合' },
+              { value: 'sold-out', label: 'ご予約完売（キャンセル）' },
             ];
             
             // ブランドに応じてメッセージタイプを表示
