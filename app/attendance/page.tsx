@@ -75,6 +75,18 @@ export default function AttendancePage() {
               >
                 チャットメッセージ生成
               </Link>
+              <Link
+                href="/map"
+                className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors text-sm"
+              >
+                現在地マップ
+              </Link>
+              <Link
+                href="/knowledge"
+                className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors text-sm"
+              >
+                ナレッジ
+              </Link>
             </nav>
           </div>
         </header>

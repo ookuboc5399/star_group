@@ -97,3 +97,34 @@ export function normalizeName(name: string): string {
   return normalized;
 }
 
+// 受付時間文字列を分単位に変換
+export function parseTimeStringToMinutes(timeStr?: string | null): number | null {
+  if (!timeStr) return null;
+  const trimmed = String(timeStr).trim();
+  if (!trimmed) return null;
+
+  let hourPart: number | null = null;
+  let minutePart = 0;
+
+  if (trimmed.includes(':')) {
+    const [h, m] = trimmed.split(':');
+    hourPart = parseInt(h, 10);
+    minutePart = parseInt(m, 10) || 0;
+  } else if (trimmed.includes('.')) {
+    const [h, fraction] = trimmed.split('.');
+    hourPart = parseInt(h, 10);
+    const fractionDigits = fraction.replace(/[^\d]/g, '');
+    const decimal = Number(`0.${fractionDigits || '0'}`);
+    minutePart = Math.round(decimal * 60);
+  } else {
+    const digits = trimmed.replace(/[^\d]/g, '');
+    if (!digits) return null;
+    hourPart = parseInt(digits, 10);
+  }
+
+  if (hourPart === null || Number.isNaN(hourPart)) return null;
+  if (Number.isNaN(minutePart)) minutePart = 0;
+  minutePart = Math.max(0, Math.min(59, minutePart));
+  return timeToMinutes(hourPart, minutePart);
+}
+

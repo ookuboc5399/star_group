@@ -20,7 +20,11 @@ import {
   getDateOptions,
   getCurrentTimeMinutes,
   normalizeName,
+  parseTimeStringToMinutes,
 } from '@/app/lib/utils';
+
+const GOOGLE_MAPS_BROWSER_KEY =
+  process.env.NEXT_PUBLIC_GOOGLE_MAP_API_KEY || process.env.GOOGLE_MAP_API_KEY || '';
 
 const GOHOBI_ROOKIES = new Set([
   'もか',
@@ -46,6 +50,8 @@ export default function ReservationsPage() {
   const [receptionData, setReceptionData] = useState<ReceptionData | null>(null);
   const [attendanceData, setAttendanceData] = useState<Map<string, { start: number; end: number }>>(new Map());
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  // 受付可能な女の子の名前リスト（正規化済み）
+  const [activeNames, setActiveNames] = useState<Set<string>>(new Set());
   
   // 出勤データ用の状態（予約表示で使用）
   const [sheetDataGohobi, setSheetDataGohobi] = useState<SheetData | null>(null);
@@ -69,7 +75,6 @@ export default function ReservationsPage() {
       .map((name) => normalizeName(name).replace(/\s+/g, ''))
       .filter(Boolean);
   }, [nameFilter]);
-  
   // hoveredSlotの状態変化をログに出力（デバッグ用）
   useEffect(() => {
     console.log('[ポップアップ表示] hoveredSlotの状態変化:', {
@@ -84,6 +89,14 @@ export default function ReservationsPage() {
   const [showEditReceptionModal, setShowEditReceptionModal] = useState(false);
   const [selectedReception, setSelectedReception] = useState<any | null>(null);
   const [selectedGirl, setSelectedGirl] = useState<Girl | null>(null);
+  // 予約追加ウィンドウの位置とサイズ
+  const [modalPosition, setModalPosition] = useState({ x: 0, y: 0 });
+  const [modalSize, setModalSize] = useState({ width: 672, height: 600 }); // max-w-2xl (672px) をデフォルト
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeDirection, setResizeDirection] = useState<'right' | 'bottom' | 'both' | null>(null);
+  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [formData, setFormData] = useState({
     brand: '',
     phone: '',
@@ -106,6 +119,184 @@ export default function ReservationsPage() {
     note: '',
     staff: '', // 担当（E列）
   });
+  const [travelTimeInfo, setTravelTimeInfo] = useState<{
+    origin: string;
+    destination: string;
+    durationText: string;
+    durationSeconds: number;
+    distanceText: string;
+    distanceMeters: number;
+  } | null>(null);
+  const [isFetchingTravelTime, setIsFetchingTravelTime] = useState(false);
+  const hotelMapUrl = useMemo(() => {
+    if (!GOOGLE_MAPS_BROWSER_KEY || !formData.hotelLocation.trim()) return null;
+    return `https://www.google.com/maps/embed/v1/place?key=${GOOGLE_MAPS_BROWSER_KEY}&q=${encodeURIComponent(
+      formData.hotelLocation.trim()
+    )}`;
+  }, [formData.hotelLocation]);
+
+  const previousReceptionInfo = useMemo<{
+    location: string;
+    endMinutes: number | null;
+    startMinutes: number | null;
+    endTimeText: string;
+  } | null>(() => {
+    if (!selectedGirl || !receptionData?.receptions) return null;
+    const targetNames = new Set<string>();
+    const collectNames = (value?: string) => {
+      if (!value) return;
+      const normalized = normalizeName(value).replace(/\s+/g, '');
+      if (normalized) {
+        targetNames.add(normalized);
+      }
+      if (value.includes('/')) {
+        value.split('/').forEach(part => {
+          const normalizedPart = normalizeName(part).replace(/\s+/g, '');
+          if (normalizedPart) {
+            targetNames.add(normalizedPart);
+          }
+        });
+      }
+    };
+    collectNames(selectedGirl.name);
+    collectNames(selectedGirl.nameGohobi);
+    collectNames(selectedGirl.nameGussuri);
+
+    const matches = receptionData.receptions
+      .filter(reception => {
+        const normalizedReception = normalizeName(reception.castName || '').replace(/\s+/g, '');
+        return normalizedReception && targetNames.has(normalizedReception);
+      })
+      .sort((a, b) => (b.startMinutes ?? 0) - (a.startMinutes ?? 0));
+
+    if (!matches.length) return null;
+    const latest = matches[0];
+    const computedEndMinutes =
+      typeof latest.endMinutes === 'number'
+        ? latest.endMinutes
+        : parseTimeStringToMinutes(latest.endTime || latest.actualStartTime);
+    const computedStartMinutes =
+      typeof latest.startMinutes === 'number'
+        ? latest.startMinutes
+        : parseTimeStringToMinutes(latest.startTime);
+    return {
+      location: latest.hotelLocation || '',
+      endMinutes: computedEndMinutes ?? computedStartMinutes ?? null,
+      startMinutes: computedStartMinutes,
+      endTimeText: latest.endTime || latest.actualStartTime || latest.startTime || '',
+    };
+  }, [selectedGirl, receptionData]);
+
+  const previousReceptionLocation = previousReceptionInfo?.location || '';
+
+  useEffect(() => {
+    if (
+      !showAddReservationModal ||
+      !previousReceptionLocation ||
+      !formData.hotelLocation.trim()
+    ) {
+      setTravelTimeInfo(null);
+      setIsFetchingTravelTime(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsFetchingTravelTime(true);
+    const handler = setTimeout(async () => {
+      try {
+        const response = await fetch('/api/distance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            origin: previousReceptionLocation,
+            destination: formData.hotelLocation.trim(),
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          if (!isCancelled) {
+            setTravelTimeInfo(null);
+          }
+          return;
+        }
+        if (!isCancelled) {
+          setTravelTimeInfo({
+            origin: result.origin || previousReceptionLocation,
+            destination: result.destination || formData.hotelLocation.trim(),
+            durationText: result.durationText,
+            durationSeconds: result.durationSeconds ?? 0,
+            distanceText: result.distanceText,
+            distanceMeters: result.distanceMeters ?? 0,
+          });
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          console.error('[移動時間取得] エラー:', error);
+          setTravelTimeInfo(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsFetchingTravelTime(false);
+        }
+      }
+    }, 600);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(handler);
+    };
+  }, [showAddReservationModal, previousReceptionLocation, formData.hotelLocation]);
+  const earliestGuidanceTime = useMemo(() => {
+    if (!previousReceptionInfo || !travelTimeInfo?.durationSeconds) return null;
+    const baseMinutes =
+      previousReceptionInfo.endMinutes ?? previousReceptionInfo.startMinutes ?? null;
+    if (baseMinutes === null) return null;
+    const travelMinutes = Math.ceil(travelTimeInfo.durationSeconds / 60);
+    const bufferMinutes = 20;
+    const totalMinutes = baseMinutes + travelMinutes + bufferMinutes;
+    const normalizedMinutes = ((totalMinutes % TOTAL_MINUTES) + TOTAL_MINUTES) % TOTAL_MINUTES;
+    return {
+      timeText: minutesToTime(normalizedMinutes),
+      bufferMinutes,
+      travelMinutes,
+    };
+  }, [previousReceptionInfo, travelTimeInfo]);
+
+  // 出勤時間超過チェック
+  const exceedsAttendanceTime = useMemo(() => {
+    if (!selectedGirl || !formData.startHour || !formData.startMinute || !formData.courseTime) {
+      return null;
+    }
+
+    const attendanceSlot = getAttendanceSlot(selectedGirl);
+    if (!attendanceSlot) {
+      return null; // 出勤時間が設定されていない場合はチェックしない
+    }
+
+    // 開始時間を分単位に変換（10時基準）
+    const startHour = parseInt(formData.startHour, 10);
+    const startMinute = parseInt(formData.startMinute, 10);
+    const courseTime = parseInt(formData.courseTime, 10);
+
+    if (isNaN(startHour) || isNaN(startMinute) || isNaN(courseTime)) {
+      return null;
+    }
+
+    const startMinutes = timeToMinutes(startHour, startMinute);
+    const endMinutes = startMinutes + courseTime;
+    const attendanceEndMinutes = attendanceSlot.end;
+
+    // 終了時刻が出勤終了時刻を超える場合
+    if (endMinutes > attendanceEndMinutes) {
+      return {
+        exceeds: true,
+        endTime: minutesToTime(endMinutes),
+        attendanceEndTime: minutesToTime(attendanceEndMinutes),
+      };
+    }
+
+    return { exceeds: false };
+  }, [selectedGirl, formData.startHour, formData.startMinute, formData.courseTime]);
   
   // 料金マスターデータ
   const [pricingData, setPricingData] = useState<{
@@ -199,9 +390,10 @@ export default function ReservationsPage() {
     try {
       setLoading(true);
       const dateParam = date || selectedDate;
-      const [reservationResponse, receptionResponse] = await Promise.all([
+      const [reservationResponse, receptionResponse, closedListResponse] = await Promise.all([
         fetch(`/api/reservations?date=${encodeURIComponent(dateParam)}`),
         fetch(`/api/receptions?date=${encodeURIComponent(dateParam)}`),
+        fetch(`/api/closed-list`),
       ]);
       
       const reservationData: ReservationData = await reservationResponse.json();
@@ -254,6 +446,16 @@ export default function ReservationsPage() {
         }
       } else {
         console.error('[受付データ] 取得失敗:', receptionDataResult.error);
+      }
+
+      // 受付終了リストを取得
+      const closedListData = await closedListResponse.json();
+      if (closedListData.success && closedListData.activeNames) {
+        setActiveNames(new Set(closedListData.activeNames));
+      } else {
+        console.warn('[受付終了リスト] 取得失敗:', closedListData.error);
+        // エラーが発生しても空のセットを設定（既存のロジックに影響しないように）
+        setActiveNames(new Set());
       }
     } catch (err: any) {
       setError(err.message || 'データの取得に失敗しました');
@@ -517,6 +719,65 @@ export default function ReservationsPage() {
     }, 1000); // 1秒ごとに更新
     return () => clearInterval(interval);
   }, []);
+
+  // ドラッグイベントのグローバル処理
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      setModalPosition({
+        x: e.clientX - dragOffset.x,
+        y: e.clientY - dragOffset.y,
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, dragOffset]);
+
+  // リサイズイベントのグローバル処理
+  useEffect(() => {
+    if (!isResizing || !resizeDirection) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - resizeStart.x;
+      const deltaY = e.clientY - resizeStart.y;
+      
+      let newWidth = modalSize.width;
+      let newHeight = modalSize.height;
+      
+      if (resizeDirection === 'right' || resizeDirection === 'both') {
+        newWidth = Math.max(400, resizeStart.width + deltaX); // 最小幅400px
+      }
+      if (resizeDirection === 'bottom' || resizeDirection === 'both') {
+        newHeight = Math.max(300, resizeStart.height + deltaY); // 最小高さ300px
+      }
+      
+      setModalSize({ width: newWidth, height: newHeight });
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      setResizeDirection(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, resizeDirection, resizeStart, modalSize.width, modalSize.height]);
 
   // 料金マスターデータを取得
   const fetchPricingData = useCallback(async () => {
@@ -1501,6 +1762,12 @@ export default function ReservationsPage() {
                 チャットメッセージ生成
               </Link>
               <Link
+                href="/map"
+                className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors text-sm"
+              >
+                現在地マップ
+              </Link>
+              <Link
                 href="/knowledge"
                 className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors text-sm"
               >
@@ -1723,6 +1990,25 @@ export default function ReservationsPage() {
                       
                       // ソート前にisClosedを再計算
                       let isClosed = girl.isClosed;
+                      
+                      // 受付終了リストに基づく判定
+                      // activeNamesに含まれていない女の子は受付終了
+                      if (!isClosed && activeNames.size > 0) {
+                        const normalizedGohobi = normalizeName(girl.nameGohobi || '').replace(/\s+/g, '');
+                        const normalizedGussuri = normalizeName(girl.nameGussuri || '').replace(/\s+/g, '');
+                        const normalizedName = normalizeName(girl.name || '').replace(/\s+/g, '');
+                        
+                        // いずれかの名前がactiveNamesに含まれていない場合、受付終了
+                        const isInActiveList = 
+                          (normalizedGohobi && activeNames.has(normalizedGohobi)) ||
+                          (normalizedGussuri && activeNames.has(normalizedGussuri)) ||
+                          (normalizedName && activeNames.has(normalizedName));
+                        
+                        if (!isInActiveList) {
+                          isClosed = true;
+                        }
+                      }
+                      
                       if (!isClosed) {
                         const attendanceSlot = getAttendanceSlot(girl);
                         if (attendanceSlot) {
@@ -2052,6 +2338,15 @@ export default function ReservationsPage() {
                                   note: '',
                                   staff: '',
                                 });
+                                // モーダルを開くときに初期位置を画面中央に設定
+                                if (typeof window !== 'undefined') {
+                                  setModalPosition({
+                                    x: window.innerWidth / 2,
+                                    y: window.innerHeight / 2,
+                                  });
+                                  // 初期サイズも設定
+                                  setModalSize({ width: 672, height: 600 });
+                                }
                                 setShowAddReservationModal(true);
                               }
                             }}
@@ -2633,21 +2928,49 @@ export default function ReservationsPage() {
             );
           })()}
 
-        {/* 予約追加モーダル */}
+        {/* 予約追加ウィンドウ */}
         {showAddReservationModal && selectedGirl && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-                <h2 className="text-xl font-bold text-gray-900">予約追加</h2>
-                <button
-                  onClick={() => setShowAddReservationModal(false)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
+          <div
+            className="fixed z-50 bg-white rounded-lg shadow-2xl overflow-hidden border-2 border-gray-300"
+            style={{
+              left: modalPosition.x || '50%',
+              top: modalPosition.y || '50%',
+              transform: modalPosition.x && modalPosition.y ? 'none' : 'translate(-50%, -50%)',
+              width: modalSize.width,
+              height: modalSize.height,
+              cursor: isDragging ? 'grabbing' : 'default',
+            }}
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest('.modal-header')) {
+                setIsDragging(true);
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setDragOffset({
+                  x: e.clientX - rect.left,
+                  y: e.clientY - rect.top,
+                });
+              }
+            }}
+          >
+            <div className="modal-header sticky top-0 bg-gray-100 border-b border-gray-300 px-6 py-3 flex justify-between items-center cursor-grab active:cursor-grabbing">
+              <h2 className="text-xl font-bold text-gray-900">予約追加</h2>
+              <button
+                onClick={() => {
+                  setShowAddReservationModal(false);
+                  // 位置とサイズをリセット
+                  setModalPosition({ x: 0, y: 0 });
+                  setModalSize({ width: 672, height: 600 });
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div 
+              className="overflow-y-auto"
+              style={{ height: modalSize.height - 60 }} // ヘッダーの高さ（60px）を引く
+            >
               <form
                 onSubmit={async (e) => {
                   e.preventDefault();
@@ -2678,6 +3001,9 @@ export default function ReservationsPage() {
                     
                     if (result.success) {
                       setShowAddReservationModal(false);
+                      // 位置とサイズをリセット
+                      setModalPosition({ x: 0, y: 0 });
+                      setModalSize({ width: 672, height: 600 });
                       // データを再取得
                       fetchReservations();
                       alert('予約が追加されました');
@@ -2866,6 +3192,30 @@ export default function ReservationsPage() {
                       </div>
                     </div>
                   </div>
+                  {previousReceptionLocation && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      前回受付場所: {previousReceptionLocation}
+                      {isFetchingTravelTime && (
+                        <span className="ml-2 text-blue-500">移動時間を計算中...</span>
+                      )}
+                    </p>
+                  )}
+                  {travelTimeInfo && (
+                    <div className="mt-2 text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-md p-2">
+                      前回受付場所（{travelTimeInfo.origin}）から現在の場所（{travelTimeInfo.destination}）まで
+                      約{travelTimeInfo.durationText}（{travelTimeInfo.distanceText}）。
+                      {earliestGuidanceTime ? (
+                        <span className="block mt-1 font-semibold text-orange-800">
+                          最短ご案内開始目安: {earliestGuidanceTime.timeText} ごろ
+                          （移動{earliestGuidanceTime.travelMinutes}分 + 予備{earliestGuidanceTime.bufferMinutes}分）。
+                        </span>
+                      ) : (
+                        <span className="block mt-1">
+                          開始時間は移動時間に加え、少なくとも20分の余裕を見込んで設定してください。
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       コース時間（分） <span className="text-red-500">*</span>
@@ -2909,6 +3259,14 @@ export default function ReservationsPage() {
                       <p className="mt-1 text-xs text-gray-500">
                         ※ {getCourseTimeSuggestions().length}件の候補があります
                       </p>
+                    )}
+                    {exceedsAttendanceTime?.exceeds && (
+                      <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
+                        <span className="font-semibold">⚠️ 女の子に確認要</span>
+                        <p className="mt-1">
+                          予約終了時刻（{exceedsAttendanceTime.endTime}）が女の子の出勤終了時刻（{exceedsAttendanceTime.attendanceEndTime}）を超えています。
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -3010,6 +3368,24 @@ export default function ReservationsPage() {
                         ))}
                       </datalist>
                     </div>
+                    {hotelMapUrl ? (
+                      <div className="mt-3">
+                        <iframe
+                          title="hotel-map"
+                          src={hotelMapUrl}
+                          className="w-full h-60 rounded-lg border border-gray-200"
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                        />
+                      </div>
+                    ) : (
+                      formData.hotelLocation.trim() &&
+                      !GOOGLE_MAPS_BROWSER_KEY && (
+                        <p className="mt-2 text-xs text-gray-500">
+                          Google Maps APIキーが設定されていないため、マップを表示できません。
+                        </p>
+                      )
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -3107,7 +3483,12 @@ export default function ReservationsPage() {
                 <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
                   <button
                     type="button"
-                    onClick={() => setShowAddReservationModal(false)}
+                    onClick={() => {
+                      setShowAddReservationModal(false);
+                      // 位置とサイズをリセット
+                      setModalPosition({ x: 0, y: 0 });
+                      setModalSize({ width: 672, height: 600 });
+                    }}
                     className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
                   >
                     キャンセル
@@ -3121,6 +3502,62 @@ export default function ReservationsPage() {
                 </div>
               </form>
             </div>
+            {/* リサイズハンドル */}
+            {/* 右端（横幅のみ） */}
+            <div
+              className="absolute top-0 right-0 w-2 h-full cursor-ew-resize hover:bg-blue-400 transition-colors group"
+              style={{ zIndex: 10 }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setIsResizing(true);
+                setResizeDirection('right');
+                setResizeStart({
+                  x: e.clientX,
+                  y: e.clientY,
+                  width: modalSize.width,
+                  height: modalSize.height,
+                });
+              }}
+            >
+              <div className="absolute top-1/2 right-0 transform -translate-y-1/2 w-1 h-8 bg-gray-400 group-hover:bg-blue-500 rounded-l transition-colors" />
+            </div>
+            {/* 下端（高さのみ） */}
+            <div
+              className="absolute bottom-0 left-0 w-full h-2 cursor-ns-resize hover:bg-blue-400 transition-colors group"
+              style={{ zIndex: 10 }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setIsResizing(true);
+                setResizeDirection('bottom');
+                setResizeStart({
+                  x: e.clientX,
+                  y: e.clientY,
+                  width: modalSize.width,
+                  height: modalSize.height,
+                });
+              }}
+            >
+              <div className="absolute left-1/2 bottom-0 transform -translate-x-1/2 w-8 h-1 bg-gray-400 group-hover:bg-blue-500 rounded-t transition-colors" />
+            </div>
+            {/* 右下（両方） */}
+            <div
+              className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-gray-300 hover:bg-blue-400 transition-colors"
+              style={{
+                clipPath: 'polygon(100% 0, 0 100%, 100% 100%)',
+                zIndex: 10,
+              }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setIsResizing(true);
+                setResizeDirection('both');
+                setResizeStart({
+                  x: e.clientX,
+                  y: e.clientY,
+                  width: modalSize.width,
+                  height: modalSize.height,
+                });
+              }}
+            />
           </div>
         )}
 
